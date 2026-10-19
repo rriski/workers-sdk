@@ -12,7 +12,7 @@ const UPDATE_CHECK_TIMEOUT_MS = 3_000;
 // How long a registry lookup is reused before asking npm again.
 const CACHE_TTL_MS = 60 * 60 * 1_000;
 
-const NPM_REGISTRY_URL = "https://registry.npmjs.org/";
+const DEFAULT_NPM_REGISTRY_URL = "https://registry.npmjs.org/";
 
 // Sentinel value used to distinguish a timeout from "nothing to recommend".
 const TIMED_OUT: unique symbol = Symbol("timed_out");
@@ -41,7 +41,8 @@ interface UpdateCheckCache {
 /**
  * Checks if a newer version of a package is available on npm.
  *
- * Queries the npm registry for the version behind the relevant dist tag —
+ * Queries the npm registry (the one set in `npm_config_registry`, or
+ * registry.npmjs.org) for the version behind the relevant dist tag —
  * "beta" for pre-release versions (0.0.0-*) and "latest" for stable versions.
  * Deprecated releases are never recommended: if the tagged version has been
  * deprecated, the newest non-deprecated stable release below it is suggested
@@ -145,8 +146,27 @@ function pickLatestVersion(
 	return candidates.at(-1) ?? null;
 }
 
+/**
+ * Resolve the npm registry to query from the `npm_config_registry`
+ * environment variable, falling back to the public registry.
+ *
+ * npm, npx and `npm run` set `npm_config_registry` from `.npmrc` for the
+ * processes they start, so this follows the registry configured there too.
+ */
+function getNpmRegistryUrl(): string {
+	// Read dynamically, like `xdg-app-paths.ts`: these are npm's runtime
+	// settings, not build inputs (`turbo/no-undeclared-env-vars`).
+	const registry =
+		["npm_config_registry", "NPM_CONFIG_REGISTRY"]
+			.map((name) => process.env[name])
+			.find(Boolean) ?? DEFAULT_NPM_REGISTRY_URL;
+	// Without a trailing slash, URL resolution would drop the last path
+	// segment of registries served under a path (e.g. `/api/npm/npm-remote`).
+	return registry.endsWith("/") ? registry : `${registry}/`;
+}
+
 async function fetchPackument(name: string): Promise<AbbreviatedPackument> {
-	const packageUrl = new URL(encodeURIComponent(name), NPM_REGISTRY_URL);
+	const packageUrl = new URL(encodeURIComponent(name), getNpmRegistryUrl());
 	const response = await fetch(packageUrl, {
 		headers: {
 			accept:

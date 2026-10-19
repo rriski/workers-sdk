@@ -35,6 +35,10 @@ describe("fetchLatestNpmVersion", () => {
 		vi.stubEnv("TMPDIR", tempDir);
 		vi.stubEnv("TEMP", tempDir);
 		vi.stubEnv("TMP", tempDir);
+		// Keep a registry configured on the developer's machine or in CI from
+		// redirecting requests away from the mocked public registry.
+		vi.stubEnv("npm_config_registry", undefined);
+		vi.stubEnv("NPM_CONFIG_REGISTRY", undefined);
 
 		originalDispatcher = getGlobalDispatcher();
 		mockAgent = new MockAgent();
@@ -51,12 +55,12 @@ describe("fetchLatestNpmVersion", () => {
 	function mockPackument(
 		name: string,
 		body: Packument,
-		{ status = 200, times = 1 } = {}
+		{ status = 200, times = 1, origin = REGISTRY_ORIGIN, pathPrefix = "" } = {}
 	) {
 		mockAgent
-			.get(REGISTRY_ORIGIN)
+			.get(origin)
 			.intercept({
-				path: `/${encodeURIComponent(name)}`,
+				path: `${pathPrefix}/${encodeURIComponent(name)}`,
 				method: "GET",
 			})
 			.reply(status, body)
@@ -241,6 +245,44 @@ describe("fetchLatestNpmVersion", () => {
 		expect(
 			JSON.parse(readFileSync(cacheFilePath("@cloudflare/vite-plugin"), "utf8"))
 		).toMatchObject({ latest: "1.2.0" });
+	});
+
+	it.for(["npm_config_registry", "NPM_CONFIG_REGISTRY"])(
+		"queries the registry set in %s",
+		async (variableName, { expect }) => {
+			vi.stubEnv(variableName, "https://npm-mirror.example.com/");
+			mockPackument(
+				"wrangler",
+				packument({ latest: "4.14.2" }, { "4.14.1": {}, "4.14.2": {} }),
+				{ origin: "https://npm-mirror.example.com" }
+			);
+
+			await expect(
+				fetchLatestNpmVersion("wrangler", "4.14.1")
+			).resolves.toEqual({ status: "update-available", latest: "4.14.2" });
+		}
+	);
+
+	it("keeps the path of a configured registry without a trailing slash", async ({
+		expect,
+	}) => {
+		vi.stubEnv(
+			"npm_config_registry",
+			"https://npm-mirror.example.com/api/npm/npm-remote"
+		);
+		mockPackument(
+			"wrangler",
+			packument({ latest: "4.14.2" }, { "4.14.1": {}, "4.14.2": {} }),
+			{
+				origin: "https://npm-mirror.example.com",
+				pathPrefix: "/api/npm/npm-remote",
+			}
+		);
+
+		await expect(fetchLatestNpmVersion("wrangler", "4.14.1")).resolves.toEqual({
+			status: "update-available",
+			latest: "4.14.2",
+		});
 	});
 
 	it("caches the registry lookup so later checks do not hit the network", async ({
